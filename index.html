@@ -1837,7 +1837,7 @@ html&gt;body{padding:0}&lt;/style&gt;
 #route-puzzle-v4 .cargo.due&gt;span {background:var(--due);color:var(--dueink)}
 #route-puzzle-v4 .cargo.ghost {opacity:.85;touch-action:none}
 #route-puzzle-v4 .cargo.ghost&gt;span {background:var(--new);color:var(--newink);border:2px dashed var(--newink)}
-#route-puzzle-v4 .cargo.invalid {pointer-events:none}
+#route-puzzle-v4 .cargo.invalid {pointer-events:auto}
 #route-puzzle-v4 .cargo.invalid&gt;span {color:var(--error);background:var(--paper);border-color:var(--error)}
 #route-puzzle-v4 .cargo.blocker&gt;span {box-shadow:inset 0 0 0 2px var(--error)}
 #route-puzzle-v4 .drag-layer {z-index:5}
@@ -1847,6 +1847,8 @@ html&gt;body{padding:0}&lt;/style&gt;
 #route-puzzle-v4 .door {text-align:center;font-size:12px;padding:9px 0;color:var(--mutedink)}
 #route-puzzle-v4 .pickup-panel {display:flex;gap:8px;align-items:center;margin-top:12px}
 #route-puzzle-v4 .shelf {display:flex;align-items:center;justify-content:center;gap:12px;flex:1;background:var(--new);color:var(--newink);touch-action:none}
+#route-puzzle-v4 .shelf,#route-puzzle-v4 .cargo.ghost {cursor:grab;user-select:none;-webkit-user-select:none;-webkit-touch-callout:none}
+#route-puzzle-v4[data-dragging=true] {cursor:grabbing}
 #route-puzzle-v4 .mini-shape {display:grid;grid-template-columns:repeat(var(--w),12px);gap:2px}
 #route-puzzle-v4 .mini-shape i {width:12px;height:12px;background:var(--newink);opacity:.65;border-radius:2px}
 #route-puzzle-v4 .pickup-label {font-size:13px;text-align:left}
@@ -2045,6 +2047,7 @@ const root = document.getElementById(&#x27;route-puzzle-v4&#x27;);
 const find = s =&gt; root.querySelector(s), all = s =&gt; [...root.querySelectorAll(s)];
 const schema = 4;
 let active = &#x27;long&#x27;, games = {}, busy = false, message = &#x27;&#x27;, error = false, moving = null, attempt = null, highlighted = [];
+let lastSavedState = &#x27;&#x27;;
 const fresh = id =&gt; ({stop:1,phase:&#x27;arrival&#x27;,boxes:copy(scenarios.find(s=&gt;s.id===id).initial),choices:[],checkpoints:[],rotation:false,preview:null,failure:null});
 const scenario = () =&gt; scenarios.find(s=&gt;s.id===active);
 const game = () =&gt; games[active] || (games[active]=fresh(active));
@@ -2056,6 +2059,9 @@ function snapshot(g) {return copy({stop:g.stop,boxes:g.boxes,choices:g.choices})
 function rememberArrival() {const g=game();g.checkpoints[g.stop-1]=snapshot(g);g.checkpoints.length=g.stop;}
 function save() {
  const state={modelContent:{problem:active,stop:game().stop,phase:game().phase,pickups:game().choices.map(p=&gt;({id:p.id,column:p.x+1,row:p.y+1,width:p.w,height:p.h})),failure:game().failure},privateContent:{deliveryRouteV3:{schema,active,games}}};
+ // The standalone host echoes writes synchronously. Do not restore our own
+ // snapshot: transient rejection feedback and the held pointer must survive.
+ lastSavedState=JSON.stringify(state);
  if(window.openai?.setWidgetState) Promise.resolve(window.openai.setWidgetState(state)).catch(()=&gt;{});
 }
 function safeGame(candidate,id) {
@@ -2097,8 +2103,8 @@ function cargo(p,cls=&#x27;&#x27;) {const ghost=cls.includes(&#x27;ghost&#x27;);
 function defaultMessage() {
  const g=game();if(g.phase===&#x27;done&#x27;)return &#x27;모든 짐 배송 완료! 다른 문제에서도 같은 P 배치가 통할까요?&#x27;;
  if(g.phase===&#x27;failed&#x27;)return g.failure?.text||&#x27;이 정류장을 완료할 수 없어요.&#x27;;
- if(g.phase===&#x27;arrival&#x27;)return g.stop===1?&#x27;A를 배송한 뒤 P를 놓아요. 이후 배송은 자동으로 이어져요.&#x27;:`${g.stop}번 배송을 이어서 진행해요.`;
- return g.preview?`${g.preview.id}는 지금 실을 수 있어요. 다음 짐 공간과 배송길도 확인해요.`:&#x27;수거 짐이 선택됐어요. 칸을 누르거나 끌어 놓고, 필요하면 회전해요.&#x27;;
+ if(g.phase===&#x27;arrival&#x27;)return g.stop===1?&#x27;먼저 아래 버튼으로 A를 배송하세요. 시작 짐은 고정이고, 이후 받는 수거 짐을 끌어 놓아요.&#x27;:`${g.stop}번 배송을 이어서 진행해요.`;
+ return g.preview?`${g.preview.id}는 지금 실을 수 있어요. 점선 짐을 다시 끌어 위치를 바꿀 수 있어요.`:&#x27;아래 수거 짐을 차 안으로 끌어 놓으세요. 칸을 눌러도 놓을 수 있어요.&#x27;;
 }
 function render() {
  const g=game(),p=pickup();if(g.phase!==&#x27;pickup&#x27;){attempt=null;highlighted=g.failure?.blockers||[];}root.dataset.case=active;root.dataset.phase=g.phase;root.dataset.stop=g.stop;root.dataset.busy=String(busy);
@@ -2111,7 +2117,7 @@ function render() {
  if(p){
   const shelf=find(&#x27;.shelf&#x27;),key=`${p.id}:${p.w}:${p.h}`;
   // Keep the touched element alive until the browser finishes the touch sequence.
-  if(shelf.dataset.shape!==key){shelf.innerHTML=shape(p.w,p.h,&#x27;mini-shape&#x27;)+`&lt;span class=&quot;pickup-label&quot;&gt;${p.id} 수거 · ${p.w}×${p.h}&lt;br&gt;4번에 배송&lt;/span&gt;`;shelf.dataset.shape=key;}
+  if(shelf.dataset.shape!==key){shelf.innerHTML=shape(p.w,p.h,&#x27;mini-shape&#x27;)+`&lt;span class=&quot;pickup-label&quot;&gt;${p.id} 수거 · ${p.w}×${p.h}&lt;br&gt;여기를 잡고 차 안으로 ↑&lt;/span&gt;`;shelf.dataset.shape=key;}
   shelf.disabled=busy;shelf.setAttribute(&#x27;aria-pressed&#x27;,String(g.phase===&#x27;pickup&#x27;));shelf.setAttribute(&#x27;aria-label&#x27;,`${p.id} 선택됨, ${p.w} 곱하기 ${p.h}, 4번 배송. 적재칸에 놓기`);
  }
  find(&#x27;[data-act=rotate]&#x27;).disabled=busy||!p||p.w===p.h;
@@ -2207,9 +2213,10 @@ async function activate(e) {
   case &#x27;compare&#x27;:await compare();break;
  }
 }
-const touchClicks=new WeakMap();let buttonTouch=null;
-root.addEventListener(&#x27;click&#x27;,e=&gt;{const b=e.target.closest(&#x27;button&#x27;);if(b&amp;&amp;performance.now()-(touchClicks.get(b)||-1000)&lt;700)return;void activate(e);});
+const touchClicks=new WeakMap();let buttonTouch=null,suppressDragClickUntil=0;
+root.addEventListener(&#x27;click&#x27;,e=&gt;{if(e.detail&gt;0&amp;&amp;performance.now()&lt;suppressDragClickUntil){e.preventDefault();return;}const b=e.target.closest(&#x27;button&#x27;);if(b&amp;&amp;performance.now()-(touchClicks.get(b)||-1000)&lt;700)return;void activate(e);});
 root.addEventListener(&#x27;pointerdown&#x27;,e=&gt;{
+ suppressDragClickUntil=0;
  if(e.pointerType!==&#x27;touch&#x27;)return;const b=e.target.closest(&#x27;button&#x27;);
  if(b&amp;&amp;!b.classList.contains(&#x27;shelf&#x27;)&amp;&amp;!b.classList.contains(&#x27;ghost&#x27;))buttonTouch={id:e.pointerId,button:b,x:e.clientX,y:e.clientY};
 });
@@ -2222,18 +2229,19 @@ let drag=null;
 function dragPosition(e){const r=find(&#x27;.board&#x27;).getBoundingClientRect(),snap=drag.fromBoard?Math.round:Math.floor;return {x:snap((e.clientX-r.left)/r.width*4-drag.offsetX),y:snap((e.clientY-r.top)/r.height*4-drag.offsetY)};}
 function endDrag(){if(drag?.target.hasPointerCapture(drag.id))drag.target.releasePointerCapture(drag.id);drag=null;root.dataset.dragging=&#x27;false&#x27;;find(&#x27;.drag-layer&#x27;).innerHTML=&#x27;&#x27;;}
 root.addEventListener(&#x27;pointerdown&#x27;,e=&gt;{
- const target=e.target.closest(&#x27;.shelf,.cargo.ghost:not(.invalid)&#x27;);if(!target||busy||game().phase!==&#x27;pickup&#x27;||drag)return;e.preventDefault();
+ const target=e.target.closest(&#x27;.shelf,.cargo-layer .cargo.ghost&#x27;);if(!target||busy||game().phase!==&#x27;pickup&#x27;||drag||e.isPrimary===false||e.button!==0)return;e.preventDefault();
  const r=find(&#x27;.board&#x27;).getBoundingClientRect(),fromBoard=target.classList.contains(&#x27;ghost&#x27;);
- drag={id:e.pointerId,target,x:e.clientX,y:e.clientY,moved:false,fromBoard,offsetX:fromBoard?(e.clientX-r.left)/r.width*4-game().preview.x:0,offsetY:fromBoard?(e.clientY-r.top)/r.height*4-game().preview.y:0};target.setPointerCapture(e.pointerId);
+ const placed=attempt||game().preview;
+ drag={id:e.pointerId,target,x:e.clientX,y:e.clientY,moved:false,fromBoard,offsetX:fromBoard?(e.clientX-r.left)/r.width*4-placed.x:0,offsetY:fromBoard?(e.clientY-r.top)/r.height*4-placed.y:0};target.setPointerCapture(e.pointerId);
 });
 root.addEventListener(&#x27;pointermove&#x27;,e=&gt;{
  if(!drag||drag.id!==e.pointerId)return;drag.moved ||= Math.hypot(e.clientX-drag.x,e.clientY-drag.y)&gt;8;if(!drag.moved)return;
  const candidate={...pickup(),...dragPosition(e)},result=placementResult(candidate);root.dataset.dragging=&#x27;true&#x27;;
  find(&#x27;.drag-layer&#x27;).innerHTML=cargo(candidate,result.ok?&#x27;ghost&#x27;:&#x27;ghost invalid&#x27;);
 });
-root.addEventListener(&#x27;pointerup&#x27;,e=&gt;{if(!drag||drag.id!==e.pointerId)return;const moved=drag.moved,position=dragPosition(e);endDrag();if(moved)place(position.x,position.y);else if(!game().preview)say(&#x27;적재칸에서 짐의 왼쪽 위를 골라 주세요.&#x27;);});
+root.addEventListener(&#x27;pointerup&#x27;,e=&gt;{if(!drag||drag.id!==e.pointerId)return;const moved=drag.moved,position=dragPosition(e);endDrag();if(moved){suppressDragClickUntil=performance.now()+700;place(position.x,position.y);}else if(!game().preview)say(&#x27;적재칸에서 짐의 왼쪽 위를 골라 주세요.&#x27;);});
 root.addEventListener(&#x27;pointercancel&#x27;,()=&gt;{endDrag();});
-window.addEventListener(&#x27;openai:set_globals&#x27;,e=&gt;{if(!busy&amp;&amp;e.detail?.globals&amp;&amp;Object.hasOwn(e.detail.globals,&#x27;widgetState&#x27;))restore(e.detail.globals.widgetState);});
+window.addEventListener(&#x27;openai:set_globals&#x27;,e=&gt;{if(!busy&amp;&amp;e.detail?.globals&amp;&amp;Object.hasOwn(e.detail.globals,&#x27;widgetState&#x27;)&amp;&amp;JSON.stringify(e.detail.globals.widgetState)!==lastSavedState)restore(e.detail.globals.widgetState);});
 scenarios.forEach(validateScenario);
 if(!restore(window.openai?.widgetState))render();
 })();
